@@ -18,6 +18,7 @@ import {
   assistantSchema,
   validateAssistantResponse
 } from '../src/services/ai/schemas/index.js';
+import { generateDeterministicAssistantResponse } from '../src/services/ai/assistantService.js';
 import { buildAgronomicContext } from '../src/services/agronomy/agronomicContextEngine.js';
 import { getCropProfile, listRegisteredCrops } from '../src/services/agronomy/cropProfiles/index.js';
 import {
@@ -176,8 +177,29 @@ app.use((req, res, next) => {
   next();
 });
 
-// 4. Body Parsers with strict size limits
-app.use(cors());
+// 4. CORS configuration for Netlify & local development
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:3001',
+  ...(process.env.APP_URL ? [process.env.APP_URL] : []),
+  ...(process.env.URL ? [process.env.URL] : []),
+  ...(process.env.DEPLOY_PRIME_URL ? [process.env.DEPLOY_PRIME_URL] : [])
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin) || origin.endsWith('.netlify.app')) {
+      return callback(null, true);
+    }
+    return callback(null, true);
+  },
+  credentials: true
+}));
 app.use(express.json({ limit: '20mb' })); // Support base64 image uploads
 
 // Safety instructions according to agronomic requirements
@@ -835,11 +857,21 @@ Return your answer matching the JSON responseSchema.
       });
     }
 
-    // Deterministic fallback response handled by client or fallback endpoint
-    return res.status(500).json({ error: 'Failed to generate structured response' });
+    // Deterministic fallback response
+    const fallback = generateDeterministicAssistantResponse(message, farmContext);
+    return res.json({
+      ...fallback,
+      aiMode: 'fallback',
+      notice: 'Deterministic AI assistant response.'
+    });
   } catch (error) {
     console.error('Assistant endpoint error:', error);
-    return res.status(500).json({ error: error.message });
+    const fallback = generateDeterministicAssistantResponse(req.body?.message || '', req.body?.farmContext);
+    return res.json({
+      ...fallback,
+      aiMode: 'fallback',
+      notice: 'Deterministic AI assistant response.'
+    });
   }
 });
 
@@ -2257,10 +2289,28 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`AgriBridge AI Backend Server running on port ${PORT}`);
-  console.log(`AI Mode: ${isLiveAIConfigured() ? 'LIVE (Gemini: ' + getGeminiModelName() + ')' : 'PROTOTYPE (Fallback Mode)'}`);
-});
+// Start server if executed directly (e.g., node server/index.js or npm start)
+const isServerless = Boolean(
+  process.env.NETLIFY || 
+  process.env.AWS_LAMBDA_FUNCTION_NAME || 
+  process.env.LAMBDA_TASK_ROOT
+);
+
+if (!isServerless && process.env.NODE_ENV !== 'test') {
+  const isDirectRun = process.argv[1] && (
+    process.argv[1].endsWith('server/index.js') || 
+    process.argv[1].endsWith('server\\index.js') || 
+    process.argv[1].endsWith('server.js')
+  );
+  if (isDirectRun || process.env.STANDALONE_SERVER === 'true') {
+    app.listen(PORT, () => {
+      console.log(`AgriBridge AI Backend Server running on port ${PORT}`);
+      console.log(`AI Mode: ${isLiveAIConfigured() ? 'LIVE (Gemini: ' + getGeminiModelName() + ')' : 'DETERMINISTIC (Fallback Mode)'}`);
+    });
+  }
+}
+
+export { app };
+export default app;
 
 
